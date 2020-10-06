@@ -217,6 +217,7 @@ public class PtGen {
 
 		compteurGlobales = 0;
 		compteurReserver = 0;
+		compteurArgsRef = 0;
 		compteurDeclProc = 0;
 		compteurAppelProc = 0;
 		affectId = 0;
@@ -224,18 +225,21 @@ public class PtGen {
 		appelNParams = 0;
 	} // initialisations
 
-	private static int compteurGlobales;
-	private static int compteurReserver;
-	private static int compteurDeclProc;
-	private static int compteurAppelProc;
-	private static int affectId;
-	private static int appelId;
-	private static int appelNParams;
+	private static int compteurGlobales; // Compte le nombre de variables globales
+	private static int compteurReserver; // Compte le nombre de variables a reserver
+	private static int compteurArgsRef; // Compte le nombres d'arguments a chaque declaration de ref
+	private static int compteurDeclProc; // Compte le nombre de variable locales dans une procedure
+	private static int compteurAppelProc; // Compte le nombre d'arguments passés dans un appel
+	private static int affectId; // id de la variable a assigner
+	private static int appelId; // id de la procedure a appeler
+	private static int appelNParams; // se rappel du nombre de parametres d'une procedure lors d'un appel
 
 	/**
-	 * Transforme un type en string pour les messages d'erreurs
-	 * par exemple ENT -> "ent"
-	 * @param type le type a transformer
+	 * Transforme un type en string pour les messages d'erreurs par exemple ENT ->
+	 * "ent"
+	 * 
+	 * @param type
+	 *            le type a transformer
 	 * @return le type sous sa représentation en liste chainée
 	 */
 	private static String chaineType(int type) {
@@ -265,16 +269,80 @@ public class PtGen {
 			initialisations();
 			break;
 
+		/* Unite programme */
+		case 420:
+			desc.setUnite("programme");
+			break;
+
+		/* Arret d'un programme */
+		case 440:
+			po.produire(ARRET);
+			break;
+
+		/* Unite module */
+		case 480:
+			desc.setUnite("module");
+			break;
+
 		/* BINCOND initial avant les procedures */
 		case 530:
-			po.produire(BINCOND);
-			po.produire(-1);
-			pileRep.empiler(po.getIpo()); // On retient le trou du premier bincond
+			if (desc.getUnite() == "programme") {
+				po.produire(BINCOND);
+				po.produire(-1);
+				pileRep.empiler(po.getIpo()); // On retient le trou du premier bincond
+			}
 			break;
 
 		/* resolution du bincond initial */
 		case 531:
-			po.modifier(pileRep.depiler(), po.getIpo() + 1);
+			if (desc.getUnite() == "programme") {
+				po.modifier(pileRep.depiler(), po.getIpo() + 1);
+			}
+			break;
+
+		/* resolution n variables globales */
+		case 532:
+			desc.setTailleGlobaux(compteurGlobales);
+			break;
+		/* partie def */
+		case 570: {
+			String s = UtilLex.chaineIdent(UtilLex.numIdCourant);
+			if (desc.presentDef(s) != 0) {
+				UtilLex.messErr("def en double: " + s);
+			}
+			desc.ajoutDef(s);
+		}
+			break;
+
+		/* partie ref */
+		case 630: {
+			String s = UtilLex.chaineIdent(UtilLex.numIdCourant);
+			if (desc.presentDef(s) != 0) {
+				UtilLex.messErr("ref en double: " + s);
+			}
+			desc.ajoutRef(s);
+			placeIdent(UtilLex.numIdCourant, PROC, NEUTRE, desc.getNbRef());
+			placeIdent(-1, REF, NEUTRE, 0);
+			compteurArgsRef = 0;
+		}
+			break;
+
+		/* ref specification paramfixe */
+		case 631:
+			placeIdent(-1, PARAMFIXE, tCour, compteurArgsRef);
+			compteurArgsRef++;
+			break;
+
+		/* ref specification parammod */
+		case 640:
+			placeIdent(-1, PARAMMOD, tCour, compteurArgsRef);
+			compteurArgsRef++;
+			break;
+
+		/* finalisation declaration ref */
+		case 641:
+			desc.modifRefNbParam(desc.getNbRef(), compteurArgsRef);
+			tabSymb[it - compteurArgsRef].info = compteurArgsRef;
 			break;
 
 		/* consts */
@@ -303,7 +371,8 @@ public class PtGen {
 			break;
 
 		case 702:
-			if (compteurReserver > 0) {
+			if ((desc.getUnite() == "programme" || bc > 1) // On ne genere pas de reserver pour les globales des modules
+					&& compteurReserver > 0) {
 				po.produire(RESERVER);
 				po.produire(compteurReserver);
 			}
@@ -320,20 +389,43 @@ public class PtGen {
 
 		/* decproc */
 
-		case 800: // Initialisation de la procedure
+		case 800: {// Initialisation de la procedure
 			if (presentIdent(1) != 0) {
 				UtilLex.messErr("La procedure " + UtilLex.chaineIdent(UtilLex.numIdCourant)
 						+ " a un conflit de nom avec une variable/procedure deja declaree");
 			}
-			placeIdent(UtilLex.numIdCourant, PROC, NEUTRE, po.getIpo() + 1);
-			placeIdent(-1, PRIVEE, NEUTRE, 0);
+
+			int debut_proc = po.getIpo() + 1;
+
+			placeIdent(UtilLex.numIdCourant, PROC, NEUTRE, debut_proc);
+
+			int def_id = desc.presentDef(UtilLex.chaineIdent(UtilLex.numIdCourant));
+			int categorie = PRIVEE;
+			if (def_id != 0) {
+				desc.modifDefAdPo(def_id, debut_proc);
+				categorie = DEF;
+			}
+
+			placeIdent(-1, categorie, NEUTRE, 0);
+
 			bc = it + 1;
 			compteurDeclProc = 0;
+		}
 			break;
 
-		case 801: // apres avoir declare les parametres
+		case 801: {// apres avoir declare les parametres
 			tabSymb[bc - 1].info = compteurDeclProc; // Resolution du nombre de parametres
+
+			int proc_num_id = tabSymb[bc - 2].code;
+
+			int def_id = desc.presentDef(UtilLex.chaineIdent(proc_num_id)); // Resolution du nombre de parametres dans
+																			// le cas d'une def
+			if (def_id != 0) {
+				desc.modifDefNbParam(def_id, compteurDeclProc);
+			}
+
 			compteurDeclProc += 2; // On prends en compte les 2 donnees de liaisons
+		}
 			break;
 
 		case 802: {
@@ -370,13 +462,15 @@ public class PtGen {
 			verifBool();
 			po.produire(BSIFAUX);
 			po.produire(-1);
+			modifVecteurTrans(TRANSCODE);
 			pileRep.empiler(po.getIpo()); // On retient le trou du bsifaux
 			break;
 
 		case 1161:
 			po.produire(BINCOND);
 			po.produire(-1);
-
+			modifVecteurTrans(TRANSCODE);
+			
 			po.modifier(pileRep.depiler(), po.getIpo() + 1); // On resoud le bsifaux pour le else
 			pileRep.empiler(po.getIpo()); // On retient le trou du bincond de la fin du si
 			break;
@@ -388,13 +482,15 @@ public class PtGen {
 		/* TTQ */
 
 		case 1250:
-			pileRep.empiler(po.getIpo() + 1);// On retient le debut des instructions de la boucle pour le bincond plus tard
+			pileRep.empiler(po.getIpo() + 1);// On retient le debut des instructions de la boucle pour le bincond plus
+												// tard
 			break;
 
 		case 1251:
 			po.produire(BSIFAUX);
 			po.produire(-1);
-
+			modifVecteurTrans(TRANSCODE);
+			
 			pileRep.empiler(po.getIpo()); // on retient le trou du bsifaux
 
 			break;
@@ -404,6 +500,7 @@ public class PtGen {
 
 			po.produire(BINCOND);
 			po.produire(pileRep.depiler()); // on produit le bincond avec l'addresse du debut des instructions
+			modifVecteurTrans(TRANSCODE);
 			break;
 
 		/* COND */
@@ -415,6 +512,7 @@ public class PtGen {
 		case 1191: // execute apres chaque expression
 			po.produire(BSIFAUX);
 			po.produire(-1);
+			modifVecteurTrans(TRANSCODE);
 			pileRep.empiler(po.getIpo());
 			break;
 
@@ -426,7 +524,8 @@ public class PtGen {
 			int ipo_dernier_bincond = pileRep.depiler();
 			po.produire(BINCOND);
 			po.produire(ipo_dernier_bincond);
-
+			modifVecteurTrans(TRANSCODE);
+			
 			pileRep.empiler(po.getIpo());
 			break;
 
@@ -459,13 +558,13 @@ public class PtGen {
 				UtilLex.messErr(UtilLex.numIdCourant + " non present dans la table des symboles");
 				break;
 			}
-			
+
 			EltTabSymb symb = tabSymb[id];
 			if (!(symb.categorie == VARGLOBALE || symb.categorie == VARLOCALE)) {
 				UtilLex.messErr(UtilLex.chaineIdent(symb.code) + " n'est pas une variable");
 				break;
 			}
-			
+
 			switch (symb.type) {
 			case ENT:
 				po.produire(LIRENT);
@@ -473,12 +572,15 @@ public class PtGen {
 			case BOOL:
 				po.produire(LIREBOOL);
 				break;
+			default: 
+				UtilLex.messErr("Type invalide: " + symb.type);
 			}
 
 			switch (symb.categorie) {
 			case VARGLOBALE:
 				po.produire(AFFECTERG);
 				po.produire(symb.info);
+				modifVecteurTrans(TRANSDON);
 				break;
 			case VARLOCALE:
 				po.produire(AFFECTERL);
@@ -507,6 +609,8 @@ public class PtGen {
 			case BOOL:
 				po.produire(ECRBOOL);
 				break;
+			default: 
+				UtilLex.messErr("Type invalide: " + tCour);
 			}
 			break;
 
@@ -529,6 +633,7 @@ public class PtGen {
 			case VARGLOBALE:
 				po.produire(AFFECTERG);
 				po.produire(symb.info);
+				modifVecteurTrans(TRANSDON);
 				break;
 			case VARLOCALE:
 				po.produire(AFFECTERL);
@@ -578,15 +683,19 @@ public class PtGen {
 						"Impossible d'appeller " + UtilLex.chaineIdent(symb.code) + " car ce n'est pas une procedure");
 			}
 
+			String nom_proc = UtilLex.chaineIdent(symb.code);
+
 			int n_params = tabSymb[appelId + 1].info;
 			if (n_params != compteurAppelProc) {
-				UtilLex.messErr("Le nombre de parametres lors de l'appel est invalide. "
-						+ UtilLex.chaineIdent(symb.code) + " s'attends a " + n_params + " parametres mais "
-						+ compteurAppelProc + " parametres ont ete donnes");
+				UtilLex.messErr("Le nombre de parametres lors de l'appel est invalide. " + nom_proc + " s'attends a "
+						+ n_params + " parametres mais " + compteurAppelProc + " parametres ont ete donnes");
 			}
 
 			po.produire(APPEL);
 			po.produire(symb.info);
+			if (desc.presentRef(nom_proc) != 0) {
+				modifVecteurTrans(REFEXT);
+			}
 			po.produire(n_params);
 		}
 			break;
@@ -756,6 +865,7 @@ public class PtGen {
 			case VARGLOBALE:
 				po.produire(CONTENUG);
 				po.produire(symb.info);
+				modifVecteurTrans(TRANSDON);
 				break;
 			case VARLOCALE:
 			case PARAMFIXE:
@@ -796,11 +906,21 @@ public class PtGen {
 			vCour = FAUX;
 			tCour = BOOL;
 			break;
-		case 3000:
-			po.produire(ARRET);
+		case 3000: {
+			// Verification que toutes les procedures dans tabDef ont etes initialisees
+			for (int i = 0; i < desc.getNbDef(); i++) {
+				if (desc.getDefAdPo(i) == -1) {
+					UtilLex.messErr("La procedure def \"" + desc.getDefNomProc(i) + "\" n'a pas ete definie");
+					break;
+				}
+			}
+
+			desc.setTailleCode(po.getIpo());
 			afftabSymb();
+			desc.ecrireDesc(UtilLex.nomSource);
 			po.constObj();
 			po.constGen();
+		}
 			break;
 		default:
 			System.out.println("Point de generation non prevu dans votre liste");
